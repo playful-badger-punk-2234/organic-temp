@@ -19,9 +19,142 @@ library(dphelpers)
 library(extenddatapackage)
 library(purrr)
 library(janitor)
+library(tibble)
 
 # Functions ---------------------------------------------------------------
+clean_tokens <- function(x) {
+  x %>%
+    str_remove("^\\s*\\*\\s*") %>%
+    str_split("/") %>%
+    map(str_squish) %>%
+    map(~ .x[.x != ""])
+}
 
+# Convert numeric value+unit to a standardized unit (g or ml or pcs)
+convert_to_std <- function(value, unit) {
+  unit <- tolower(unit)
+  unit <- str_replace(unit, "\\.$", "")
+  if (unit == "kg")  return(list(measure_type = "weight",  unit_std = "g",   value_std = value * 1000))
+  if (unit == "g")   return(list(measure_type = "weight",  unit_std = "g",   value_std = value))
+  if (unit == "l")   return(list(measure_type = "volume",  unit_std = "ml",  value_std = value * 1000))
+  if (unit == "ml")  return(list(measure_type = "volume",  unit_std = "ml",  value_std = value))
+  if (unit == "stk") return(list(measure_type = "pieces",  unit_std = "pcs", value_std = value))
+  if (unit == "pt") return(list(measure_type = "pieces",  unit_std = "pcs", value_std = value))
+  list(measure_type = NA_character_, unit_std = NA_character_, value_std = NA_real_)
+}
+
+# Parse one mixed token to standardized net amount(s)
+parse_net_amount <- function(s) {
+  raw <- s
+  
+  # Basic cleanup
+  x <- raw %>%
+    str_to_lower() %>%
+    str_replace_all(",", ".") %>%
+    str_replace_all("\\bca\\.?\\b", " ") %>%
+    str_replace_all("\\bmin\\.?\\b", " ") %>%
+    str_replace_all("\\bmindst\\b", " ") %>%
+    str_replace_all("\\+", " ") %>%
+    str_replace_all("\\s+", " ") %>%
+    str_trim()
+  
+  # Remove trailing punctuation
+  x <- str_replace(x, "[\\.;]+$", "")
+  
+  # 1) Multiplication like "6 x 0.33 l" or "12 x 400 g"
+  m_mul <- str_match(x, "(\\d+)\\s*[x×]\\s*(\\d+(?:\\.\\d+)?)\\s*(kg|g|l|ml|stk\\.?)(?=\\s|$)")
+  if (!is.na(m_mul[1, 1])) {
+    n <- as.numeric(m_mul[1, 2])
+    v <- as.numeric(m_mul[1, 3])
+    u <- str_replace(m_mul[1, 4], "\\.$", "")
+    conv <- convert_to_std(n * v, u)
+    
+    return(tibble(
+      token_raw = raw,
+      token_clean = x,
+      rule = "multiply",
+      is_range = FALSE,
+      range_side = "single",
+      unit_raw = u,
+      measure_type = conv$measure_type,
+      unit_std = conv$unit_std,
+      amount_std = conv$value_std
+    ))
+  }
+  
+  # 2) Range like "10-20 g" or "920-1000 g" or "0.80-1.0 kg"
+  m_rng <- str_match(x, "(\\d+(?:\\.\\d+)?)\\s*-\\s*(\\d+(?:\\.\\d+)?)\\s*(kg|g|l|ml|stk\\.?)(?=\\s|$)")
+  if (!is.na(m_rng[1, 1])) {
+    lo <- as.numeric(m_rng[1, 2])
+    hi <- as.numeric(m_rng[1, 3])
+    u  <- str_replace(m_rng[1, 4], "\\.$", "")
+    
+    conv_lo <- convert_to_std(lo, u)
+    conv_hi <- convert_to_std(hi, u)
+    
+    return(tibble(
+      token_raw = raw,
+      token_clean = x,
+      rule = "range",
+      is_range = TRUE,
+      range_side = c("low", "high"),
+      unit_raw = u,
+      measure_type = conv_lo$measure_type,
+      unit_std = conv_lo$unit_std,
+      amount_std = c(conv_lo$value_std, conv_hi$value_std)
+    ))
+  }
+  
+  # 3) Single amount anywhere in the string
+  all_matches <- str_match_all(x, "(\\d+(?:\\.\\d+)?)\\s*(kg|g|l|ml|stk\\.?)(?=\\s|$)")[[1]]
+  if (nrow(all_matches) > 0) {
+    units <- str_replace(all_matches[, 3], "\\.$", "")
+    
+    # Prefer weight over volume over pieces
+    idx_weight <- which(units %in% c("kg", "g"))
+    idx_vol    <- which(units %in% c("l", "ml"))
+    idx_pcs    <- which(units %in% c("stk"))
+    
+    pick <- if (length(idx_weight) > 0) {
+      idx_weight[1]
+    } else if (length(idx_vol) > 0) {
+      idx_vol[1]
+    } else if (length(idx_pcs) > 0) {
+      idx_pcs[1]
+    } else {
+      1
+    }
+    
+    v <- as.numeric(all_matches[pick, 2])
+    u <- units[pick]
+    conv <- convert_to_std(v, u)
+    
+    return(tibble(
+      token_raw = raw,
+      token_clean = x,
+      rule = "single",
+      is_range = FALSE,
+      range_side = "single",
+      unit_raw = u,
+      measure_type = conv$measure_type,
+      unit_std = conv$unit_std,
+      amount_std = conv$value_std
+    ))
+  }
+  
+  # No parseable amount found
+  tibble(
+    token_raw = raw,
+    token_clean = x,
+    rule = "no_match",
+    is_range = NA,
+    range_side = NA_character_,
+    unit_raw = NA_character_,
+    measure_type = NA_character_,
+    unit_std = NA_character_,
+    amount_std = NA_real_
+  )
+}
 
 # Function to append categories to a doc
 append_categories <- function(new_data, filepath, logpath) {
@@ -260,4 +393,116 @@ timestamped_output_path <- function(output_path, timestamp = Sys.time()) {
     format(timestamp, "%d"),
     format(timestamp, "%H-%M-%S")
   )
+}
+
+
+## Load all resources from a datapackage into a named list of data  --------
+
+
+get_data_tables <- function(dp) {
+  
+  # Get resource names
+  resource_names <- dp_resource_names(dp)
+  
+  # Load data and use resource names as list names
+  setNames(
+    lapply(
+      resource_names,
+      function(name) dp_get_data(dp_resource(dp, name))
+    ),
+    gsub("-", "_", resource_names, fixed = TRUE)
+  )
+  
+}
+
+## Function for creating a codebook with info on all variables -------------
+
+
+create_codebook <- function(dp) {
+  
+  # Get resource names
+  resource_names <- dp_resource_names(dp)
+  
+  # Get resource metadata
+  resources <- setNames(
+    lapply(resource_names, \(x) dp_resource(dp, x)),
+    gsub("-", "_", resource_names, fixed = TRUE)
+  )
+  
+  # Get data tables
+  data_tables <- tryCatch(
+    setNames(
+      lapply(resource_names, \(x) dp_get_data(dp_resource(dp, x))),
+      gsub("-", "_", resource_names, fixed = TRUE)
+    ),
+    error = function(e) NULL
+  )
+  
+  # Extract metadata
+  metadata <- purrr::imap_dfr(
+    resources,
+    function(resource, resource_name) {
+      
+      fields <- resource$schema$fields
+      
+      # Handle missing schema
+      if (is.null(fields) || length(fields) == 0) {
+        
+        return(
+          tibble::tibble(
+            resource = resource_name,
+            name = NA_character_
+          )
+        )
+      }
+      
+      dplyr::bind_rows(
+        lapply(fields, tibble::as_tibble)
+      ) |>
+        dplyr::mutate(
+          resource = resource_name,
+          .before = 1
+        )
+    }
+  )
+  
+  # Return metadata only if data unavailable
+  if (is.null(data_tables)) {
+    
+    return(
+      metadata |>
+        dplyr::mutate(
+          resource = factor(resource)
+        )
+    )
+    
+  }
+  
+  # Calculate variable statistics
+  stats <- purrr::imap_dfr(
+    data_tables,
+    function(df, resource_name) {
+      
+      tibble::tibble(
+        resource = resource_name,
+        name = names(df),
+        class = purrr::map_chr(df, ~ class(.x)[1]),
+        n_missing = purrr::map_int(df, ~ sum(is.na(.x))),
+        n_unique = purrr::map_int(
+          df,
+          ~ dplyr::n_distinct(.x, na.rm = TRUE)
+        )
+      )
+    }
+  )
+  
+  # Merge metadata and statistics
+  dplyr::full_join(
+    metadata,
+    stats,
+    by = c("resource", "name")
+  ) |>
+    dplyr::mutate(
+      resource = factor(resource)
+    )
 }
