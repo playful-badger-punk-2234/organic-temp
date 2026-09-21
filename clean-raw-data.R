@@ -1,10 +1,33 @@
 source("functions.R")
 
+source("load-dp.R")
 
 latest_data <- shopping_data_tables$raw_nemlig_data %>% 
-  select(-Email)
+  select(-Email) %>% 
+  distinct()
+
+# latest_data %>% select(-CurrentSalesPriceNemlig, -PriceUnit) %>% distinct() %>%  group_by(SalesOrderNumber, ProductSku, QuantityProductsInvoiced) %>% mutate(n = n()) %>% filter(n>1) %>% arrange(SalesOrderNumber, ProductSku) %>% View()
+
+categories_keep <- shopping_data_tables$categories_to_keep
+
+categories_removed <- latest_data %>% 
+  filter(
+    !Categories %in% categories_keep$Categories
+  ) %>% 
+  select(
+    contains("GroupLevel"),
+    Categories
+  ) %>% 
+  distinct() %>% 
+  arrange(
+    GroupLevel1, GroupLevel2, GroupLevel3
+  )
+
 
 nemlig_encoded <- latest_data %>%
+  filter(
+   Categories %in% categories_keep$Categories 
+  ) %>% 
   # Split attibute markings into list
   mutate(attributes = strsplit(AttributesMarkings, ",\\s*")) %>%
   # Replace empty attributes with text
@@ -24,6 +47,8 @@ nemlig_encoded <- latest_data %>%
   ) %>% 
   # Remove the column that shows no attribute
   select(-nomarking)
+
+
 
 
 nemlig_encoded2 <- nemlig_encoded %>%
@@ -139,3 +164,5 @@ nemlig_mixed_long <- nemlig_encoded2 %>%
   mutate(
     purchase_amount = amount_std * QuantityProductsInvoiced
   )
+
+nemlig_mixed_long %>% filter(is.na(purchase_amount)) %>% View()
