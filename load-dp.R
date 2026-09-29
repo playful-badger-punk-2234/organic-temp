@@ -3,13 +3,19 @@ source("functions.R")
 
 # Load in datapackage -----------------------------------------------------
 
-# Path to datapackage.json
-dp <- open_datapackage(
-  "Z:/DTUFOOD-DL00056/Bronze/raw-shopping-data-dp/2026/09/22/15-37-25/datapackage.json"
-)
+# Get the latest version of the dp
+latest <- find_latest_timestamped_folder("Z:/DTUFOOD-DL00056/Bronze/raw-shopping-data-dp")
+
+# Import dp as an object
+dp <- get_dp(
+  dl_path = "Z:/DTUFOOD-DL00056",
+  dp_path = "Bronze/raw-shopping-data-dp",
+  version = latest
+  )
+
 
 # Assign resources to a list
-shopping_data_tables <- get_data_tables(dp)
+shopping_data_tables <- get_all_data_from_datapackage_grouped(dp)
 
 # Create codebook
 shopping_data_codebook <- create_codebook(dp)

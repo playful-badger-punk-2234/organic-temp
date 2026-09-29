@@ -392,26 +392,6 @@ timestamped_output_path <- function(output_path, timestamp = Sys.time()) {
   )
 }
 
-
-## Load all resources from a datapackage into a named list of data  --------
-
-
-get_data_tables <- function(dp) {
-  
-  # Get resource names
-  resource_names <- dp_resource_names(dp)
-  
-  # Load data and use resource names as list names
-  setNames(
-    lapply(
-      resource_names,
-      function(name) dp_get_data(dp_resource(dp, name))
-    ),
-    gsub("-", "_", resource_names, fixed = TRUE)
-  )
-  
-}
-
 ## Function for creating a codebook with info on all variables -------------
 
 
