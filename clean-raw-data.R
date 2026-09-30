@@ -1,7 +1,5 @@
 source("functions.R")
 
-source("load-dp.R")
-
 latest_data <- shopping_data_tables$raw_nemlig_data %>% 
   # Remove personal data - email
   select(-Email) %>% 
@@ -58,7 +56,8 @@ nemlig_encoded <- latest_data %>%
 nemlig_encoded2 <- nemlig_encoded %>%
   # Create variable with organic TRUE/FALSE
   mutate(
-    organic = oko_dansk | oko_europaeisk
+    organic = oko_dansk | oko_europaeisk,
+    across(matches("date", ignore.case = TRUE), lubridate::ymd)
   ) %>% 
   mutate(
     # Use a custom function to extract important text from description fields
@@ -198,11 +197,15 @@ nemlig_mixed_long3 <- nemlig_mixed_long2 %>%
     gross = max(purchase_amount)
   ) %>% 
   ungroup() %>% 
-  clean_names()
+  mutate(
+    intervention_week_no = floor((as.numeric(DateDelivery - ShoppingStart) - 1) / 7)
+  ) %>% 
+  clean_names() 
   
 nemlig_mixed_long4 <- nemlig_mixed_long3 %>% 
   select(
     family_id,
+    intervention_week_no,
     sales_order_number:product_name,
     categories,
     group_level1:manufacturer_name,
@@ -227,7 +230,10 @@ nemlig_mixed_long4 <- nemlig_mixed_long3 %>%
     family_id, sales_order_number, product_sku
   ) %>% 
   mutate(n = n()) %>% 
-  ungroup()
+  ungroup() %>% 
+  filter(
+    date_delivery >= shopping_start & date_delivery < (shopping_end - days(2))
+  )
 
 
 # Add weight/volume for specific items manually
@@ -242,7 +248,23 @@ lines <- paste(
     "2301148,g,50,50",
     "2301153,g,50,50",
     "5016781,g,50,50",
-    "5016587,g,50,50"
+    "5016587,g,50,50",
+    "5066342,g,25,25",
+    "5600805,g,25,25",
+    "5009114,g,40,40",
+    "5020376,g,24,24",
+    "5601190,g,20,20",
+    "5033640,g,20,20",
+    "5070643,ml,330,330",
+    "5001663,g,50,50",
+    "5016273,g,25,25",
+    "5020656,g,500,500",
+    "5003848,g,50,50",
+    "5016700,g,50,50",
+    "5001658,g,100,100",
+    "5047045,g,125,125",
+    "5009618,g,125,125",
+    "5043420,g,300,300"
   ),
   collapse = "\n"
 )
@@ -251,4 +273,4 @@ lines <- paste(
 manual_weights <- readr::read_csv(I(lines))
 
 # View list of product_sku that are missing a weight/volume
-nemlig_mixed_long4 %>% filter(is.na(net), !product_sku %in% manual_weights$product_sku) %>% select(product_sku) %>% distinct() %>%  View()
+nemlig_mixed_long4 %>% filter(is.na(net), !product_sku %in% manual_weights$product_sku) %>% group_by(product_name, product_sku) %>% summarise(n = n(), .groups = "drop") %>%  View()
